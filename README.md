@@ -1,2 +1,1 @@
-# push_shove
-another terrarium build
+Input is sent directly to output

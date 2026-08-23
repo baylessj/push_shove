@@ -12,9 +12,14 @@ bool bypass = true;
 
 Switch footswitch;
 Led led_left;
+enum Pot { pot_input_trim = 0, pot_curve, pot_output_trim, NUM_ADC_CHANNELS };
 
 // range of [-50, 50]
 static float curve = 0;
+// range of []
+static float input_scale = 0;
+// range of []
+static float output_scale = 0;
 
 static float max_high_in = 0.0;
 static float max_low_in = 0.0;
@@ -40,7 +45,7 @@ static void Callback(AudioHandle::InterleavingInputBuffer in,
     float d = .0625 - curve * 0.0025 + (curve * curve * 0.000025);
 
     for (size_t i = 0; i < size; i += 2) {
-      float x = in[i] * 5; // x6 to scale up to [-1, 1] roughly
+      float x = in[i] * input_scale;
       float abs_x = fabs(x);
       float sqr_x = x * x;
 
@@ -67,9 +72,8 @@ static void Callback(AudioHandle::InterleavingInputBuffer in,
       if (tmp < max_low_out) {
         max_low_out = tmp;
       }
-      out[i] = tmp * 0.12; // scale back down to inst level
+      out[i] = tmp * output_scale; // scale back down to inst level
     }
-    // memcpy(out, 0, size * sizeof(float));
   }
 }
 
@@ -77,9 +81,11 @@ int main(void) {
   hw.Init();
   hw.SetAudioBlockSize(4);
 
-  daisy::AdcChannelConfig adcConfig;
-  adcConfig.InitSingle(terrarium::knob::top_left);
-  hw.adc.Init(&adcConfig, 1);
+  daisy::AdcChannelConfig adcConfig[NUM_ADC_CHANNELS];
+  adcConfig[pot_input_trim].InitSingle(terrarium::knob::top_left);
+  adcConfig[pot_curve].InitSingle(terrarium::knob::top_mid);
+  adcConfig[pot_output_trim].InitSingle(terrarium::knob::top_right);
+  hw.adc.Init(adcConfig, NUM_ADC_CHANNELS);
   hw.adc.Start();
 
   // set button to pin 4, update at 1kHz
@@ -88,7 +94,14 @@ int main(void) {
 
   hw.StartAudio(Callback);
   while (1) {
-    curve = (hw.adc.GetFloat(0) - 0.5) * 100;
+    curve = daisysp::fmap(hw.adc.GetFloat(pot_curve), -50, 50);
+
+    // TODO: remap this I/O trim concept to
+    // - output boost
+    // - I/O coupled "gain" knob that pulls input down and output up in equal
+    // measure for similar vol, or vice versa
+    input_scale = daisysp::fmap(hw.adc.GetFloat(pot_input_trim), 0.75, 6);
+    output_scale = daisysp::fmap(hw.adc.GetFloat(pot_output_trim), 0.05, 1);
 
     daisy::System::Delay(50);
   }

@@ -18,11 +18,11 @@ constexpr uint8_t four = 7;
 
 namespace knob {
 constexpr daisy::Pin top_left = daisy::seed::A1;
-constexpr uint8_t top_mid = 23;
-constexpr uint8_t top_right = 24;
-constexpr uint8_t bot_left = 25;
-constexpr uint8_t bot_mid = 26;
-constexpr uint8_t bot_right = 27;
+constexpr daisy::Pin top_mid = daisy::seed::A2;
+constexpr daisy::Pin top_right = daisy::seed::A3;
+constexpr daisy::Pin bot_left = daisy::seed::A4;
+constexpr daisy::Pin bot_mid = daisy::seed::A5;
+constexpr daisy::Pin bot_right = daisy::seed::A6;
 } // namespace knob
 
 namespace led {

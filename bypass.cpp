@@ -1,3 +1,4 @@
+#include "Filters/svf.h"
 #include "Utility/dsp.h"
 #include "daisy_seed.h"
 #include "terrarium.h"
@@ -26,6 +27,64 @@ static float max_low_in = 0.0;
 static float max_high_out = 0.0;
 static float max_low_out = 0.0;
 
+daisysp::Svf bandsplit_low, bandsplit_high;
+// static params assuming 240/2400 cutoffs
+// tan(pi * (cutoff_freq / sample_rate - 0.25)) * 0.5 + 0.5
+// float a_c = 0.0154663; // 240Hz
+// float b_c = 0.1357287; // 2400Hz
+// b_c * (1 - a_c) / (b_c - a_c)
+float bandsplit_mid_gain = 0.126616;
+// 1 / mid_gain
+float bandsplit_mid_gain_div = 7.897896;
+
+struct SplitBandOutputs {
+  float low;
+  float mid;
+  float high;
+};
+
+static SplitBandOutputs split_bands(float in) {
+  return {bandsplit_low.Low(), bandsplit_high.High(),
+          in - bandsplit_low.Low() - bandsplit_high.High()};
+}
+
+static float waveshape(float x) {
+  // TODO: calculate these separately, not every time
+  float a = curve * 0.01 + 1.5;
+  float b = curve * -0.02;
+  float c = curve * 0.01 - 0.5;
+  float d = .0625 - curve * 0.0025 + (curve * curve * 0.000025);
+
+  float abs_x = fabs(x);
+  float sqr_x = x * x;
+
+  float y = 0.0;
+  if (abs_x < 1.0) {
+    // ax + bx^2 + cx+3 + d(x^2 - x^3 + x^4)
+    y = a * abs_x + b * sqr_x + c * abs_x * sqr_x -
+        d * (sqr_x - 2 * sqr_x * abs_x + sqr_x * sqr_x);
+  } else {
+    y = 2 * abs_x - x * x;
+  }
+  int sgn_x = x > 0 ? 1 : -1;
+  y *= sgn_x;
+
+  if (x > max_high_in) {
+    max_high_in = x;
+  }
+  if (x < max_low_in) {
+    max_low_in = x;
+  }
+  if (y > max_high_out) {
+    max_high_out = y;
+  }
+  if (y < max_low_out) {
+    max_low_out = y;
+  }
+
+  return y;
+}
+
 static void Callback(AudioHandle::InterleavingInputBuffer in,
                      AudioHandle::InterleavingOutputBuffer out, size_t size) {
   footswitch.Debounce();
@@ -39,40 +98,20 @@ static void Callback(AudioHandle::InterleavingInputBuffer in,
   if (bypass) {
     memcpy(out, in, size * sizeof(float));
   } else {
-    float a = curve * 0.01 + 1.5;
-    float b = curve * -0.02;
-    float c = curve * 0.01 - 0.5;
-    float d = .0625 - curve * 0.0025 + (curve * curve * 0.000025);
-
     for (size_t i = 0; i < size; i += 2) {
       float x = in[i] * input_scale;
-      float abs_x = fabs(x);
-      float sqr_x = x * x;
+      bandsplit_low.Process(x);
+      bandsplit_high.Process(x);
 
-      float tmp = 0.0;
-      if (abs_x < 1.0) {
-        // ax + bx^2 + cx+3 + d(x^2 - x^3 + x^4)
-        tmp = a * abs_x + b * sqr_x + c * abs_x * sqr_x -
-              d * (sqr_x - 2 * sqr_x * abs_x + sqr_x * sqr_x);
-      } else {
-        tmp = 2 * abs_x - x * x;
-      }
-      int sgn_x = x > 0 ? 1 : -1;
-      tmp *= sgn_x;
+      SplitBandOutputs x_split = split_bands(x);
+      float y =
+          waveshape(x_split.low) +
+          waveshape(x_split.mid * bandsplit_mid_gain) * bandsplit_mid_gain_div +
+          waveshape(x_split.high);
 
-      if (x > max_high_in) {
-        max_high_in = x;
-      }
-      if (x < max_low_in) {
-        max_low_in = x;
-      }
-      if (tmp > max_high_out) {
-        max_high_out = tmp;
-      }
-      if (tmp < max_low_out) {
-        max_low_out = tmp;
-      }
-      out[i] = tmp * output_scale; // scale back down to inst level
+      //   float y = waveshape(x);
+
+      out[i] = y * output_scale; // scale back down to inst level
     }
   }
 }
@@ -92,6 +131,11 @@ int main(void) {
   footswitch.Init(terrarium::footswitch::left);
   led_left.Init(terrarium::led::left, false);
 
+  bandsplit_low.Init(hw.AudioSampleRate());
+  bandsplit_low.SetFreq(240);
+  bandsplit_high.Init(hw.AudioSampleRate());
+  bandsplit_high.SetFreq(2400);
+
   hw.StartAudio(Callback);
   while (1) {
     curve = daisysp::fmap(hw.adc.GetFloat(pot_curve), -50, 50);
@@ -102,6 +146,11 @@ int main(void) {
     // measure for similar vol, or vice versa
     input_scale = daisysp::fmap(hw.adc.GetFloat(pot_input_trim), 0.75, 6);
     output_scale = daisysp::fmap(hw.adc.GetFloat(pot_output_trim), 0.05, 1);
+
+    // other 3 knobs
+    // - wet/dry
+    // - extra compression stage?
+    // - wavefolder?
 
     daisy::System::Delay(50);
   }

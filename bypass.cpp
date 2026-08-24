@@ -1,3 +1,4 @@
+#include "Dynamics/limiter.h"
 #include "Filters/svf.h"
 #include "Utility/dsp.h"
 #include "daisy_seed.h"
@@ -19,6 +20,7 @@ enum Pot {
   pot_mix,
   NUM_ADC_CHANNELS
 };
+daisysp::Limiter limiter;
 
 /**
  * Settings
@@ -121,8 +123,14 @@ static void Callback(AudioHandle::InterleavingInputBuffer in,
   if (bypass) {
     memcpy(out, in, size * sizeof(float));
   } else {
+    // TODO: don't love the limiter as-is, but still worth playing around with
+    // probably
+    // float block[size];
+    // memcpy(block, in, size * sizeof(float));
+    // limiter.ProcessBlock(block, size, input_scale);
     for (size_t i = 0; i < size; i += 2) {
       float x = in[i] * input_scale;
+      //   float x = block[i] * 2;
       svf_low.Process(x);
       svf_high.Process(x);
 
@@ -153,7 +161,7 @@ int main(void) {
   adcConfig[pot_input_trim].InitSingle(terrarium::knob::top_left);
   adcConfig[pot_curve].InitSingle(terrarium::knob::top_mid);
   adcConfig[pot_output_trim].InitSingle(terrarium::knob::top_right);
-  adcConfig[pot_output_mix].InitSingle(terrarium::knob::bot_left);
+  adcConfig[pot_mix].InitSingle(terrarium::knob::bot_left);
   hw.adc.Init(adcConfig, NUM_ADC_CHANNELS);
   hw.adc.Start();
 
@@ -173,7 +181,7 @@ int main(void) {
     a = curve * 0.01 + 1.5;
     b = curve * -0.02;
     c = curve * 0.01 - 0.5;
-    d = .0625 - curve * 0.0025 + (curve * curve * 0.000025);
+    d = 0.0625 - curve * 0.0025 + (curve * curve * 0.000025);
 
     // TODO: remap this I/O trim concept to
     // - output boost
@@ -184,10 +192,12 @@ int main(void) {
 
     mix = hw.adc.GetFloat(pot_mix);
 
-    bandsplit_enabled = bandsplit_toggle.Read();
+    bandsplit_enabled = !bandsplit_toggle.Read(); // inverted
 
-    // other knobs
+    // TODO other knobs
     // - extra compression stage? limiter?
+    // ^ looking at
+    // https://github.com/JClones/JSFXClones/blob/master/jsfx/JClones_L2.jsfx
     // - wavefolder?
 
     daisy::System::Delay(50);

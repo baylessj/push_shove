@@ -10,10 +10,10 @@ constexpr daisy::Pin right = daisy::seed::D26;
 } // namespace footswitch
 
 namespace toggle {
-constexpr daisy::Pin one = daisy::seed::D9;
-constexpr daisy::Pin two = daisy::seed::D8;
-constexpr daisy::Pin three = daisy::seed::D7;
-constexpr daisy::Pin four = daisy::seed::D6;
+constexpr daisy::Pin one = daisy::seed::D10;
+constexpr daisy::Pin two = daisy::seed::D9;
+constexpr daisy::Pin three = daisy::seed::D8;
+constexpr daisy::Pin four = daisy::seed::D7;
 } // namespace toggle
 
 namespace knob {

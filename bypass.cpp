@@ -12,7 +12,13 @@ DaisySeed hw;
 Switch footswitch;
 Led led_left;
 GPIO bandsplit_toggle;
-enum Pot { pot_input_trim = 0, pot_curve, pot_output_trim, NUM_ADC_CHANNELS };
+enum Pot {
+  pot_input_trim = 0,
+  pot_curve,
+  pot_output_trim,
+  pot_mix,
+  NUM_ADC_CHANNELS
+};
 
 /**
  * Settings
@@ -21,14 +27,15 @@ static bool bypass = true;
 static bool bandsplit_enabled = false;
 // range of [-50, 50]
 static float curve = 0;
-float a = 0.0f;
-float b = 0.0f;
-float c = 0.0f;
-float d = 0.0f;
+static float a = 0.0f;
+static float b = 0.0f;
+static float c = 0.0f;
+static float d = 0.0f;
 // range of []
 static float input_scale = 0;
 // range of []
 static float output_scale = 0;
+static float mix = 0.0f;
 
 /**
  * I/O range checks - debug only
@@ -130,6 +137,9 @@ static void Callback(AudioHandle::InterleavingInputBuffer in,
         y = waveshape(x);
       }
 
+      // wet/dry mix
+      y = y * mix + x * (1 - mix);
+
       out[i] = y * output_scale; // scale back down to inst level
     }
   }
@@ -143,6 +153,7 @@ int main(void) {
   adcConfig[pot_input_trim].InitSingle(terrarium::knob::top_left);
   adcConfig[pot_curve].InitSingle(terrarium::knob::top_mid);
   adcConfig[pot_output_trim].InitSingle(terrarium::knob::top_right);
+  adcConfig[pot_output_mix].InitSingle(terrarium::knob::bot_left);
   hw.adc.Init(adcConfig, NUM_ADC_CHANNELS);
   hw.adc.Start();
 
@@ -171,11 +182,12 @@ int main(void) {
     input_scale = daisysp::fmap(hw.adc.GetFloat(pot_input_trim), 0.75, 6);
     output_scale = daisysp::fmap(hw.adc.GetFloat(pot_output_trim), 0.05, 1);
 
+    mix = hw.adc.GetFloat(pot_mix);
+
     bandsplit_enabled = bandsplit_toggle.Read();
 
-    // other 3 knobs
-    // - wet/dry
-    // - extra compression stage?
+    // other knobs
+    // - extra compression stage? limiter?
     // - wavefolder?
 
     daisy::System::Delay(50);

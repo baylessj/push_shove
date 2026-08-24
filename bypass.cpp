@@ -9,25 +9,39 @@ using namespace daisy;
 
 DaisySeed hw;
 
-bool bypass = true;
-
 Switch footswitch;
 Led led_left;
+GPIO bandsplit_toggle;
 enum Pot { pot_input_trim = 0, pot_curve, pot_output_trim, NUM_ADC_CHANNELS };
 
+/**
+ * Settings
+ */
+static bool bypass = true;
+static bool bandsplit_enabled = false;
 // range of [-50, 50]
 static float curve = 0;
+float a = 0.0f;
+float b = 0.0f;
+float c = 0.0f;
+float d = 0.0f;
 // range of []
 static float input_scale = 0;
 // range of []
 static float output_scale = 0;
 
+/**
+ * I/O range checks - debug only
+ */
 static float max_high_in = 0.0;
 static float max_low_in = 0.0;
 static float max_high_out = 0.0;
 static float max_low_out = 0.0;
 
-daisysp::Svf bandsplit_low, bandsplit_high;
+/**
+ * Band Splitting
+ */
+daisysp::Svf svf_low, svf_high;
 // static params assuming 240/2400 cutoffs
 // tan(pi * (cutoff_freq / sample_rate - 0.25)) * 0.5 + 0.5
 // float a_c = 0.0154663; // 240Hz
@@ -37,24 +51,25 @@ float bandsplit_mid_gain = 0.126616;
 // 1 / mid_gain
 float bandsplit_mid_gain_div = 7.897896;
 
-struct SplitBandOutputs {
+struct BandsplitOutputs {
   float low;
   float mid;
   float high;
 };
 
-static SplitBandOutputs split_bands(float in) {
-  return {bandsplit_low.Low(), bandsplit_high.High(),
-          in - bandsplit_low.Low() - bandsplit_high.High()};
+static BandsplitOutputs split_bands(float in) {
+  return {
+      svf_low.Low(),
+      in - svf_low.Low() - svf_high.High(),
+      svf_high.High(),
+  };
 }
 
+/**
+ * Waveshaping
+ */
 static float waveshape(float x) {
-  // TODO: calculate these separately, not every time
-  float a = curve * 0.01 + 1.5;
-  float b = curve * -0.02;
-  float c = curve * 0.01 - 0.5;
-  float d = .0625 - curve * 0.0025 + (curve * curve * 0.000025);
-
+  int sgn_x = x > 0 ? 1 : -1;
   float abs_x = fabs(x);
   float sqr_x = x * x;
 
@@ -66,9 +81,10 @@ static float waveshape(float x) {
   } else {
     y = 2 * abs_x - x * x;
   }
-  int sgn_x = x > 0 ? 1 : -1;
+
   y *= sgn_x;
 
+  // debug
   if (x > max_high_in) {
     max_high_in = x;
   }
@@ -100,16 +116,19 @@ static void Callback(AudioHandle::InterleavingInputBuffer in,
   } else {
     for (size_t i = 0; i < size; i += 2) {
       float x = in[i] * input_scale;
-      bandsplit_low.Process(x);
-      bandsplit_high.Process(x);
+      svf_low.Process(x);
+      svf_high.Process(x);
 
-      SplitBandOutputs x_split = split_bands(x);
-      float y =
-          waveshape(x_split.low) +
-          waveshape(x_split.mid * bandsplit_mid_gain) * bandsplit_mid_gain_div +
-          waveshape(x_split.high);
-
-      //   float y = waveshape(x);
+      float y = 0.0f;
+      if (bandsplit_enabled) {
+        BandsplitOutputs x_split = split_bands(x);
+        y = waveshape(x_split.low) +
+            waveshape(x_split.mid * bandsplit_mid_gain) *
+                bandsplit_mid_gain_div +
+            waveshape(x_split.high);
+      } else {
+        y = waveshape(x);
+      }
 
       out[i] = y * output_scale; // scale back down to inst level
     }
@@ -127,18 +146,23 @@ int main(void) {
   hw.adc.Init(adcConfig, NUM_ADC_CHANNELS);
   hw.adc.Start();
 
-  // set button to pin 4, update at 1kHz
   footswitch.Init(terrarium::footswitch::left);
   led_left.Init(terrarium::led::left, false);
+  bandsplit_toggle.Init(terrarium::toggle::one, GPIO::Mode::INPUT);
 
-  bandsplit_low.Init(hw.AudioSampleRate());
-  bandsplit_low.SetFreq(240);
-  bandsplit_high.Init(hw.AudioSampleRate());
-  bandsplit_high.SetFreq(2400);
+  svf_low.Init(hw.AudioSampleRate());
+  svf_low.SetFreq(240);
+  svf_high.Init(hw.AudioSampleRate());
+  svf_high.SetFreq(2400);
 
   hw.StartAudio(Callback);
+
   while (1) {
     curve = daisysp::fmap(hw.adc.GetFloat(pot_curve), -50, 50);
+    a = curve * 0.01 + 1.5;
+    b = curve * -0.02;
+    c = curve * 0.01 - 0.5;
+    d = .0625 - curve * 0.0025 + (curve * curve * 0.000025);
 
     // TODO: remap this I/O trim concept to
     // - output boost
@@ -146,6 +170,8 @@ int main(void) {
     // measure for similar vol, or vice versa
     input_scale = daisysp::fmap(hw.adc.GetFloat(pot_input_trim), 0.75, 6);
     output_scale = daisysp::fmap(hw.adc.GetFloat(pot_output_trim), 0.05, 1);
+
+    bandsplit_enabled = bandsplit_toggle.Read();
 
     // other 3 knobs
     // - wet/dry

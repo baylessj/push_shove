@@ -9,12 +9,12 @@ constexpr daisy::Pin left = daisy::seed::D25;
 constexpr daisy::Pin right = daisy::seed::D26;
 } // namespace footswitch
 
-namespace toggleswitch {
-constexpr uint8_t one = 10;
-constexpr uint8_t two = 9;
-constexpr uint8_t three = 8;
-constexpr uint8_t four = 7;
-} // namespace toggleswitch
+namespace toggle {
+constexpr daisy::Pin one = daisy::seed::D9;
+constexpr daisy::Pin two = daisy::seed::D8;
+constexpr daisy::Pin three = daisy::seed::D7;
+constexpr daisy::Pin four = daisy::seed::D6;
+} // namespace toggle
 
 namespace knob {
 constexpr daisy::Pin top_left = daisy::seed::A1;

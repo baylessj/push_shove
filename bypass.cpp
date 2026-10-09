@@ -1,4 +1,6 @@
 #include "Dynamics/limiter.h"
+#include "Effects/decimator.h"
+// #include "Filters/biquad.h"
 #include "Filters/svf.h"
 #include "Utility/dsp.h"
 #include "daisy_seed.h"
@@ -10,23 +12,28 @@ using namespace daisy;
 
 DaisySeed hw;
 
-Switch footswitch;
-Led led_left;
-GPIO bandsplit_toggle;
+Switch left_footswitch, right_footswitch;
+Led led_left, led_right;
+GPIO bandsplit_toggle, hpf_toggle, lpf_toggle;
 enum Pot {
   pot_input_trim = 0,
   pot_curve,
   pot_output_trim,
   pot_mix,
+  pot_decimator,
+  pot_crush,
   NUM_ADC_CHANNELS
 };
 daisysp::Limiter limiter;
 
+daisysp::Decimator decimator;
+
 /**
  * Settings
  */
-static bool bypass = true;
+static bool push_bypass = true;
 static bool bandsplit_enabled = false;
+static bool shove_bypass = true;
 // range of [-50, 50]
 static float curve = 0;
 static float a = 0.0f;
@@ -38,14 +45,12 @@ static float input_scale = 0;
 // range of []
 static float output_scale = 0;
 static float mix = 0.0f;
+static float decimator_mix = 0.0f;
 
-/**
- * I/O range checks - debug only
- */
-static float max_high_in = 0.0;
-static float max_low_in = 0.0;
-static float max_high_out = 0.0;
-static float max_low_out = 0.0;
+// input filters
+daisysp::Svf hpf, lpf;
+static bool hpf_enabled = false;
+static bool lpf_enabled = false;
 
 /**
  * Band Splitting
@@ -93,86 +98,113 @@ static float waveshape(float x) {
 
   y *= sgn_x;
 
-  // debug
-  if (x > max_high_in) {
-    max_high_in = x;
-  }
-  if (x < max_low_in) {
-    max_low_in = x;
-  }
-  if (y > max_high_out) {
-    max_high_out = y;
-  }
-  if (y < max_low_out) {
-    max_low_out = y;
-  }
-
   return y;
 }
 
 static void Callback(AudioHandle::InterleavingInputBuffer in,
                      AudioHandle::InterleavingOutputBuffer out, size_t size) {
-  footswitch.Debounce();
+  left_footswitch.Debounce();
+  right_footswitch.Debounce();
   led_left.Update();
+  led_right.Update();
 
-  if (footswitch.RisingEdge()) {
-    bypass = !bypass;
-    led_left.Set(bypass ? 0.0f : 1.0f);
+  if (left_footswitch.RisingEdge()) {
+    push_bypass = !push_bypass;
+    led_left.Set(push_bypass ? 0.0f : 1.0f);
   }
 
-  if (bypass) {
+  if (right_footswitch.RisingEdge()) {
+    shove_bypass = !shove_bypass;
+    led_right.Set(shove_bypass ? 0.0f : 1.0f);
+  }
+
+  // background processes
+  for (size_t i = 0; i < size; i += 2) {
+    float x = in[i];
+    decimator.Process(x);
+  }
+
+  if (push_bypass && shove_bypass) {
     memcpy(out, in, size * sizeof(float));
-  } else {
-    // TODO: don't love the limiter as-is, but still worth playing around with
-    // probably
-    // float block[size];
-    // memcpy(block, in, size * sizeof(float));
-    // limiter.ProcessBlock(block, size, input_scale);
-    for (size_t i = 0; i < size; i += 2) {
-      float x = in[i] * input_scale;
-      //   float x = block[i] * 2;
+    return;
+  }
+
+  for (size_t i = 0; i < size; i += 2) {
+    float x = in[i] * input_scale;
+    if (!shove_bypass) {
+      x = decimator.Process(x) * decimator_mix + x * (1 - decimator_mix);
+    }
+
+    if (!push_bypass) {
+      // TODO: move these into always on?
       svf_low.Process(x);
       svf_high.Process(x);
 
-      float y = 0.0f;
+      hpf.Process(x);
+      lpf.Process(x);
+
+      if (hpf_enabled) {
+        x = hpf.High();
+      }
+      if (lpf_enabled) {
+        x = lpf.Low();
+      }
+
+      float dry = x;
       if (bandsplit_enabled) {
         BandsplitOutputs x_split = split_bands(x);
-        y = waveshape(x_split.low) +
+        x = waveshape(x_split.low) +
             waveshape(x_split.mid * bandsplit_mid_gain) *
                 bandsplit_mid_gain_div +
             waveshape(x_split.high);
       } else {
-        y = waveshape(x);
+        x = waveshape(x);
       }
 
       // wet/dry mix
-      y = y * mix + x * (1 - mix);
-
-      out[i] = y * output_scale; // scale back down to inst level
+      x = x * mix + dry * (1 - mix);
     }
+    out[i] = x * output_scale; // scale back down to inst level
   }
 }
 
+static float crush = 0.0f;
+
 int main(void) {
   hw.Init();
-  hw.SetAudioBlockSize(4);
+  hw.SetAudioBlockSize(2);
 
   daisy::AdcChannelConfig adcConfig[NUM_ADC_CHANNELS];
   adcConfig[pot_input_trim].InitSingle(terrarium::knob::top_left);
   adcConfig[pot_curve].InitSingle(terrarium::knob::top_mid);
   adcConfig[pot_output_trim].InitSingle(terrarium::knob::top_right);
   adcConfig[pot_mix].InitSingle(terrarium::knob::bot_left);
+  adcConfig[pot_decimator].InitSingle(terrarium::knob::bot_mid);
+  adcConfig[pot_crush].InitSingle(terrarium::knob::bot_right);
   hw.adc.Init(adcConfig, NUM_ADC_CHANNELS);
   hw.adc.Start();
 
-  footswitch.Init(terrarium::footswitch::left);
+  left_footswitch.Init(terrarium::footswitch::left);
   led_left.Init(terrarium::led::left, false);
+  right_footswitch.Init(terrarium::footswitch::right);
+  led_right.Init(terrarium::led::right, false);
   bandsplit_toggle.Init(terrarium::toggle::one, GPIO::Mode::INPUT);
+  hpf_toggle.Init(terrarium::toggle::three, GPIO::Mode::INPUT);
+  lpf_toggle.Init(terrarium::toggle::four, GPIO::Mode::INPUT);
 
   svf_low.Init(hw.AudioSampleRate());
   svf_low.SetFreq(240);
   svf_high.Init(hw.AudioSampleRate());
   svf_high.SetFreq(2400);
+
+  hpf.Init(hw.AudioSampleRate());
+  hpf.SetFreq(40);
+  hpf.SetRes(0.707f);
+  lpf.Init(hw.AudioSampleRate());
+  lpf.SetFreq(3000);
+  lpf.SetRes(0.707f);
+
+  decimator.Init();
 
   hw.StartAudio(Callback);
 
@@ -193,6 +225,14 @@ int main(void) {
     mix = hw.adc.GetFloat(pot_mix);
 
     bandsplit_enabled = !bandsplit_toggle.Read(); // inverted
+    hpf_enabled = !hpf_toggle.Read();             // inverted
+    lpf_enabled = !lpf_toggle.Read();             // inverted
+
+    decimator_mix = hw.adc.GetFloat(pot_decimator);
+    crush = hw.adc.GetFloat(pot_crush);
+    decimator.SetBitcrushFactor(crush);
+    decimator.SetDownsampleFactor(2 * crush);
+    decimator.SetBitsToCrush(8 * crush);
 
     // TODO other knobs
     // - extra compression stage? limiter?

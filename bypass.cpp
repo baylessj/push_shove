@@ -10,8 +10,8 @@ using namespace daisy;
 
 DaisySeed hw;
 
-Switch footswitch;
-Led led_left;
+Switch fsw_left, fsw_right;
+Led led_left, led_right;
 GPIO bandsplit_toggle;
 enum Pot {
   pot_input_trim = 0,
@@ -25,7 +25,8 @@ daisysp::Limiter limiter;
 /**
  * Settings
  */
-static bool bypass = true;
+static bool bypass_push_push = true;
+static bool bypass_shove = true;
 static bool bandsplit_enabled = false;
 // range of [-50, 50]
 static float curve = 0;
@@ -38,14 +39,6 @@ static float input_scale = 0;
 // range of []
 static float output_scale = 0;
 static float mix = 0.0f;
-
-/**
- * I/O range checks - debug only
- */
-static float max_high_in = 0.0;
-static float max_low_in = 0.0;
-static float max_high_out = 0.0;
-static float max_low_out = 0.0;
 
 /**
  * Band Splitting
@@ -110,17 +103,29 @@ static float waveshape(float x) {
   return y;
 }
 
-static void Callback(AudioHandle::InterleavingInputBuffer in,
-                     AudioHandle::InterleavingOutputBuffer out, size_t size) {
-  footswitch.Debounce();
+static void handleFootswitches() {
+  fsw_left.Debounce();
   led_left.Update();
 
-  if (footswitch.RisingEdge()) {
-    bypass = !bypass;
-    led_left.Set(bypass ? 0.0f : 1.0f);
+  if (fsw_left.RisingEdge()) {
+    bypass_push = !bypass_push;
+    led_left.Set(bypass_push ? 0.0f : 1.0f);
   }
 
-  if (bypass) {
+  fsw_right.Debounce();
+  led_right.Update();
+
+  if (fsw_right.RisingEdge()) {
+    bypass_shove = !bypass_shove;
+    led_right.Set(bypass_shove ? 0.0f : 1.0f);
+  }
+}
+
+static void Callback(AudioHandle::InterleavingInputBuffer in,
+                     AudioHandle::InterleavingOutputBuffer out, size_t size) {
+  handleFootswitches();
+
+  if (bypass_push && bypass_shove) {
     memcpy(out, in, size * sizeof(float));
   } else {
     // TODO: don't love the limiter as-is, but still worth playing around with
@@ -165,8 +170,10 @@ int main(void) {
   hw.adc.Init(adcConfig, NUM_ADC_CHANNELS);
   hw.adc.Start();
 
-  footswitch.Init(terrarium::footswitch::left);
+  fsw_left.Init(terrarium::footswitch::left);
   led_left.Init(terrarium::led::left, false);
+  fsw_right.Init(terrarium::footswitch::right);
+  led_right.Init(terrarium::led::right, false);
   bandsplit_toggle.Init(terrarium::toggle::one, GPIO::Mode::INPUT);
 
   svf_low.Init(hw.AudioSampleRate());

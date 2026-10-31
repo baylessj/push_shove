@@ -28,7 +28,7 @@
       "servertype": "openocd",
       "showDevDebugOutput": "parsed",
       "svdFile": "${workspaceRoot}/.vscode/STM32H750x.svd",
-      "type": "cortex-debug"
+      "type": "cortex-debug",
     }
   ],
   "version": "0.2.0"

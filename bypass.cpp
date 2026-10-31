@@ -2,6 +2,7 @@
 #include "Filters/svf.h"
 #include "Utility/dsp.h"
 #include "daisy_seed.h"
+#include "octave.h"
 #include "terrarium.h"
 #include <math.h>
 #include <string.h>
@@ -18,6 +19,7 @@ enum Pot {
   pot_curve,
   pot_output_trim,
   pot_mix,
+  pot_octave,
   NUM_ADC_CHANNELS
 };
 daisysp::Limiter limiter;
@@ -25,7 +27,7 @@ daisysp::Limiter limiter;
 /**
  * Settings
  */
-static bool bypass_push_push = true;
+static bool bypass_push = true;
 static bool bypass_shove = true;
 static bool bandsplit_enabled = false;
 // range of [-50, 50]
@@ -39,6 +41,7 @@ static float input_scale = 0;
 // range of []
 static float output_scale = 0;
 static float mix = 0.0f;
+static float octave_mix = 0.0f;
 
 /**
  * Band Splitting
@@ -86,20 +89,6 @@ static float waveshape(float x) {
 
   y *= sgn_x;
 
-  // debug
-  if (x > max_high_in) {
-    max_high_in = x;
-  }
-  if (x < max_low_in) {
-    max_low_in = x;
-  }
-  if (y > max_high_out) {
-    max_high_out = y;
-  }
-  if (y < max_low_out) {
-    max_low_out = y;
-  }
-
   return y;
 }
 
@@ -121,52 +110,59 @@ static void handleFootswitches() {
   }
 }
 
+daisy::CpuLoadMeter meter;
+
 static void Callback(AudioHandle::InterleavingInputBuffer in,
                      AudioHandle::InterleavingOutputBuffer out, size_t size) {
+  meter.OnBlockStart();
   handleFootswitches();
 
-  if (bypass_push && bypass_shove) {
-    memcpy(out, in, size * sizeof(float));
-  } else {
-    // TODO: don't love the limiter as-is, but still worth playing around with
-    // probably
-    // float block[size];
-    // memcpy(block, in, size * sizeof(float));
-    // limiter.ProcessBlock(block, size, input_scale);
-    for (size_t i = 0; i < size; i += 2) {
-      float x = in[i] * input_scale;
-      //   float x = block[i] * 2;
-      svf_low.Process(x);
-      svf_high.Process(x);
+  for (size_t i = 0; i < size; i += 2) {
+    float x = in[i] * input_scale;
 
-      float y = 0.0f;
+    float oct = octave::process(x);
+    svf_low.Process(x);
+    svf_high.Process(x);
+
+    if (bypass_push && bypass_shove) {
+      memcpy(out, in, size * sizeof(float));
+      meter.OnBlockEnd();
+      return;
+    }
+    // hardcoding shove -> push for now
+    if (!bypass_shove) {
+      x = oct * octave_mix + x * (1 - octave_mix);
+    }
+    if (!bypass_push) {
+      float dry = x;
       if (bandsplit_enabled) {
         BandsplitOutputs x_split = split_bands(x);
-        y = waveshape(x_split.low) +
+        x = waveshape(x_split.low) +
             waveshape(x_split.mid * bandsplit_mid_gain) *
                 bandsplit_mid_gain_div +
             waveshape(x_split.high);
       } else {
-        y = waveshape(x);
+        x = waveshape(x);
       }
 
-      // wet/dry mix
-      y = y * mix + x * (1 - mix);
-
-      out[i] = y * output_scale; // scale back down to inst level
+      x = x * mix + dry * (1 - mix);
     }
+
+    out[i] = x * output_scale; // scale back down to inst level
   }
+  meter.OnBlockEnd();
 }
 
 int main(void) {
   hw.Init();
-  hw.SetAudioBlockSize(4);
+  hw.SetAudioBlockSize(2);
 
   daisy::AdcChannelConfig adcConfig[NUM_ADC_CHANNELS];
   adcConfig[pot_input_trim].InitSingle(terrarium::knob::top_left);
   adcConfig[pot_curve].InitSingle(terrarium::knob::top_mid);
   adcConfig[pot_output_trim].InitSingle(terrarium::knob::top_right);
   adcConfig[pot_mix].InitSingle(terrarium::knob::bot_left);
+  adcConfig[pot_octave].InitSingle(terrarium::knob::bot_mid);
   hw.adc.Init(adcConfig, NUM_ADC_CHANNELS);
   hw.adc.Start();
 
@@ -181,9 +177,17 @@ int main(void) {
   svf_high.Init(hw.AudioSampleRate());
   svf_high.SetFreq(2400);
 
+  meter.Init(hw.AudioSampleRate(), 2);
+
+  octave::init(hw.AudioSampleRate());
+
   hw.StartAudio(Callback);
 
   while (1) {
+    const float avgLoad = meter.GetAvgCpuLoad();
+    const float maxLoad = meter.GetMaxCpuLoad();
+    const float minLoad = meter.GetMinCpuLoad();
+
     curve = daisysp::fmap(hw.adc.GetFloat(pot_curve), -50, 50);
     a = curve * 0.01 + 1.5;
     b = curve * -0.02;
@@ -198,6 +202,7 @@ int main(void) {
     output_scale = daisysp::fmap(hw.adc.GetFloat(pot_output_trim), 0.05, 1);
 
     mix = hw.adc.GetFloat(pot_mix);
+    octave_mix = hw.adc.GetFloat(pot_octave);
 
     bandsplit_enabled = !bandsplit_toggle.Read(); // inverted
 

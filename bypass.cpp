@@ -4,6 +4,7 @@
 #include "daisy_seed.h"
 #include "octave.h"
 #include "terrarium.h"
+#include "yin.h"
 #include <math.h>
 #include <string.h>
 
@@ -110,7 +111,7 @@ static void handleFootswitches() {
   }
 }
 
-daisy::CpuLoadMeter meter;
+daisy::CpuLoadMeter meter, slowLoopMeter;
 
 static void Callback(AudioHandle::InterleavingInputBuffer in,
                      AudioHandle::InterleavingOutputBuffer out, size_t size) {
@@ -178,15 +179,21 @@ int main(void) {
   svf_high.SetFreq(2400);
 
   meter.Init(hw.AudioSampleRate(), 2);
+  slowLoopMeter.Init(20, 1);
 
   octave::init(hw.AudioSampleRate());
 
   hw.StartAudio(Callback);
 
   while (1) {
+    slowLoopMeter.OnBlockStart();
     const float avgLoad = meter.GetAvgCpuLoad();
     const float maxLoad = meter.GetMaxCpuLoad();
     const float minLoad = meter.GetMinCpuLoad();
+
+    const float savgLoad = slowLoopMeter.GetAvgCpuLoad();
+    const float smaxLoad = slowLoopMeter.GetMaxCpuLoad();
+    const float sminLoad = slowLoopMeter.GetMinCpuLoad();
 
     curve = daisysp::fmap(hw.adc.GetFloat(pot_curve), -50, 50);
     a = curve * 0.01 + 1.5;
@@ -206,11 +213,14 @@ int main(void) {
 
     bandsplit_enabled = !bandsplit_toggle.Read(); // inverted
 
+    yin::estimate();
+
     // TODO other knobs
     // - extra compression stage? limiter?
     // ^ looking at
     // https://github.com/JClones/JSFXClones/blob/master/jsfx/JClones_L2.jsfx
     // - wavefolder?
+    slowLoopMeter.OnBlockEnd();
 
     daisy::System::Delay(50);
   }

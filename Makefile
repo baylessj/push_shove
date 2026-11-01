@@ -2,7 +2,7 @@
 TARGET = bypass
 
 # Sources
-CPP_SOURCES = bypass.cpp octave.cpp
+CPP_SOURCES = bypass.cpp octave.cpp yin.cpp
 
 # Library Locations
 DAISYSP_DIR ?= ./DaisySP
